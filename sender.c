@@ -49,7 +49,7 @@ void send(message_t message, mailbox_t* mailbox_ptr){
     
 }
 
-int main(){
+int main(int argc, char* argv[]){
     
     message_t message;
     strcpy(message.data, "Hello world");
@@ -62,11 +62,13 @@ int main(){
 
     // Message Passing initialization
     mailbox.flag = MSG_PASSING;
-    mailbox.storage.msqid = msgget(IPC_PRIVATE, 0666 | IPC_CREAT);  // create msg queue
 
-    send(message, &mailbox);    // send msg to mailbox
+    key_t key = ftok("mag1", 65);   // create a key
+    mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
+
+    send(message, &mailbox);    // send msg to mailbox.msq
     
-    msgctl(mailbox.storage.msqid, IPC_RMID, NULL);
+    msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
 
 /*------------------------------------------------------*/
 
@@ -74,7 +76,9 @@ int main(){
     
     // Shared Memory initialization
     mailbox.flag = SHARED_MEM;
-    int shmid = shmget(IPC_PRIVATE, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
+
+    key = ftok("msg2", 66);
+    int shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
     mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
 
     send(message, &mailbox);
