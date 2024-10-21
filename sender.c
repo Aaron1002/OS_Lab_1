@@ -51,42 +51,109 @@ void send(message_t message, mailbox_t* mailbox_ptr){
 
 int main(int argc, char* argv[]){
     
+    // Input error detection
+    if (argc != 3){
+        printf("Usage: %s <1 for Message Passing, 2 for Shared Memory> <input file>\n", argv[0]);
+        return 1;
+    }
+
+    int method = atoi(argv[1]);
+    const char* input_file = argv[2];
+
+    // Read file
+    FILE* file = fopen(input_file, "r");
+    if (file == NULL){
+        perror("Failed to open this file");
+        return 1;
+    }
+
+    /*-----------------------------------------------------*/
+
     message_t message;
-    strcpy(message.data, "Hello world");
-
     mailbox_t mailbox;
+    int shmid = 0;
 
-/*------------------------------------------------------*/
+    // Semaphore initialization
+    sem_t* Sender_SEM;
+    sem_t* Receiver_SEM;
+    Sender_SEM = sem_open("/sender_sem", O_CREAT, 0664, 0);
+    Receiver_SEM = sem_open("/receiver_sem", O_CREAT, 0664, 1);
 
-    /* Message Passing */
+    if (Sender_SEM == SEM_FAILED || Receiver_SEM == SEM_FAILED){
+        perror("Failed to open semaphore");
+        exit(1);
+    }
 
-    // Message Passing initialization
-    mailbox.flag = MSG_PASSING;
+    while (fgets(message.data, sizeof(message.data), file)){
+        message.data[strcspn(message.data, "\n")] = 0;  // remove \n
 
-    key_t key = ftok("mag1", 65);   // create a key
-    mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
+        if (method == 1){   /* Message Passing */
+            
+            // Message Passing initialization
+            mailbox.flag = MSG_PASSING;
 
-    send(message, &mailbox);    // send msg to mailbox.msq
+            key_t key = ftok("msg1", 65);   // create a key
+            mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
+            if (mailbox.storage.msqid == -1){
+                perror("Failed to create or access message queue");
+                exit(1);
+            }
+
+            /* SEM & Critical region */ 
     
-    msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
+            sem_wait(Receiver_SEM);   // wait B to signal
 
-/*------------------------------------------------------*/
+            send(message, &mailbox);    // send msg to mailbox.msq
 
-    /* Shared Memory */
+            sem_post(Sender_SEM); // signal B
+
+        }
+        else if (method == 2){  /* Shared Memory */
+            
+            // Shared Memory initialization
+            mailbox.flag = SHARED_MEM;
+
+            key_t key = ftok("msg2", 66);
+            shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
+            if (shmid == -1){
+                perror("Failed to create shared memory segment");
+                exit(1);
+            }
+            mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
+
+            /* SEM & Critical region */ 
+
+            sem_wait(Receiver_SEM);   // wait B to signal
+
+            send(message, &mailbox);
+
+            sem_post(Sender_SEM); // signal B
+
+        }
+        else{
+            printf("Invalid method\n");
+            return 1;
+        }
     
-    // Shared Memory initialization
-    mailbox.flag = SHARED_MEM;
+    }
+    
+    fclose(file);
 
-    key = ftok("msg2", 66);
-    int shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
-    mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
+    // Semaphore
+    sem_close(Sender_SEM);
+    sem_close(Receiver_SEM);
+    sem_unlink("/sender_sem");
+    sem_unlink("/receiver_sem");    
 
-    send(message, &mailbox);
-
-    shmdt(mailbox.storage.shm_addr);
-    shmctl(shmid, IPC_RMID, NULL);
-
-/*------------------------------------------------------*/    
+    if (method == 1){
+        // Message Passing
+        msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
+    }
+    else if (method == 2){
+        // Shared Memory
+        shmdt(mailbox.storage.shm_addr);
+        shmctl(shmid, IPC_RMID, NULL);
+    }
 
     return 0;
 
