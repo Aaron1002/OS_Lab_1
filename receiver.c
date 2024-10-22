@@ -4,6 +4,10 @@
 #define MSG_PASSING 1
 #define SHARED_MEM 2
 
+#define KRED "\x1B[0;31m"
+#define RESET "\x1B[0m"
+#define KCYN_L "\x1B[1;36m"
+
 struct msg_buffer{
     long msg_type;
     char msg_text[MAX_MSG_SIZE];
@@ -12,10 +16,11 @@ struct msg_buffer{
 void receive(message_t* message_ptr, mailbox_t* mailbox_ptr){
     
     if (mailbox_ptr->flag == MSG_PASSING){
-        int msgid = mailbox_ptr->storage.msqid;
-        struct msg_buffer msg;
         
-        if (msgrcv(msgid, &msg, sizeof(msg.msg_text), 1, 0) == -1){
+        int msgid = mailbox_ptr->storage.msqid; // load mailbox ID
+        struct msg_buffer msg;  // load the contents of message buffer in sender
+        
+        if (msgrcv(msgid, &msg, sizeof(msg.msg_text), 1, 0) == -1){ // link msg queue with msg buffer
             /*
                 msgrcv(msg queue ID, msg buffer)
                 copy the msg buffer in msg queue to the msg buffer in receiver.c 
@@ -25,20 +30,28 @@ void receive(message_t* message_ptr, mailbox_t* mailbox_ptr){
         }
 
         strcpy(message_ptr->data, msg.msg_text);
-        printf("Received via Message Passing: %s\n", message_ptr->data);
-
+        if (strcmp(message_ptr->data, "exit") != 0){
+            printf(KCYN_L "Receiving message: ");
+            printf(RESET "%s\n", message_ptr->data);
+        }
+    
     }
+
     else if (mailbox_ptr->flag == SHARED_MEM){
+        
         if (mailbox_ptr->storage.shm_addr == NULL){
             fprintf(stderr, "Shared Memory address is NULL\n");
             exit(1);
         }
 
-        // Read msg from shared memory area
-        strcpy(message_ptr->data, mailbox_ptr->storage.shm_addr);
-        printf("Received via Shared Memory: %s\n", message_ptr->data);
+        strcpy(message_ptr->data, mailbox_ptr->storage.shm_addr);   // Read msg from shared memory area
+        if (strcmp(message_ptr->data, "exit") != 0){
+            printf(KCYN_L "Receiving message: ");
+            printf(RESET "%s\n", message_ptr->data);
+        }
 
     }   
+
     else{
         fprintf(stderr, "Invalid communication method flag\n");
         exit(1);
@@ -72,6 +85,8 @@ int main(int argc, char* argv[]){
     if (method == 1){   /*Message Passing*/
         mailbox.flag = MSG_PASSING;
 
+        printf(KCYN_L "Message Passing\n");
+
         key_t key = ftok("sender.c", 65);   // create the same key as sender.c
         mailbox.storage.msqid = msgget(key, 0666);  // open message queue
         if (mailbox.storage.msqid == -1){
@@ -83,19 +98,24 @@ int main(int argc, char* argv[]){
     else if (method == 2){  /*Shared Memory*/
         mailbox.flag = SHARED_MEM;
 
+        printf(KCYN_L "Shared Memory\n");
+
         key_t key = ftok("sender.c", 66);
         shmid = shmget(key, MAX_MSG_SIZE, 0666);    // open shm area
         if (shmid == -1){
             perror("Failed to access shared memory segment");
             exit(1);
         }
-        mailbox.storage.shm_addr = (char*) shmat(shmid, NULL, 0);   // attach to shm area 
+        mailbox.storage.shm_addr = (char*) shmat(shmid, NULL, 0);   // attach receiver to shm area 
 
     }
     else{
         printf("Invalid method\n");
         return 1;
     }
+
+    struct timespec start, end;
+    double time_spent = 0.0;
 
     /* Send */
     while (1){
@@ -106,7 +126,10 @@ int main(int argc, char* argv[]){
             /* SEM & Critical region */
             sem_wait(Sender_SEM);
 
+            clock_gettime(CLOCK_MONOTONIC, &start);
             receive(&message, &mailbox);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            time_spent += (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
 
             sem_post(Receiver_SEM);
         }
@@ -114,12 +137,18 @@ int main(int argc, char* argv[]){
             /* SEM & Critical region */
             sem_wait(Sender_SEM);
 
+            clock_gettime(CLOCK_MONOTONIC, &start);
             receive(&message, &mailbox);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            time_spent += (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
 
-            sem_post(Sender_SEM);   
+            sem_post(Receiver_SEM);   
         }
 
     }
+
+    printf(KRED "Sender exit!\n");
+    printf(RESET "Total time spent in sending msg: %f ms\n", time_spent);
 
     /* Post process */
     sem_close(Sender_SEM);
@@ -136,13 +165,4 @@ int main(int argc, char* argv[]){
 
     return 0;
 
-
-    /*  TODO: 
-        1) Call receive(&message, &mailbox) according to the flow in slide 4
-        2) Measure the total receiving time
-        3) Get the mechanism from command line arguments
-            • e.g. ./receiver 1
-        4) Print information on the console according to the output format
-        5) If the exit message is received, print the total receiving time and terminate the receiver.c
-    */
 }

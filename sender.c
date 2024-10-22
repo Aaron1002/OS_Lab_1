@@ -4,7 +4,11 @@
 #define MSG_PASSING 1
 #define SHARED_MEM 2
 
-// msg buffer for Message Passing
+#define KRED "\x1B[0;31m"
+#define RESET "\x1B[0m"
+#define KCYN_L "\x1B[1;36m"
+
+// msg buffer for Message Passing (independent in each of the process)
 struct msg_buffer{
     long msg_type;
     char msg_text[MAX_MSG_SIZE];
@@ -18,7 +22,7 @@ void send(message_t message, mailbox_t* mailbox_ptr){
         msg.msg_type = 1;   // set buffer state as "msg_passing"
         strcpy(msg.msg_text, message.data);    // copy message to msg_buffer
     
-    if (msgsnd(mailbox_ptr -> storage.msqid, &msg, sizeof(msg.msg_text), 0) == -1){
+    if (msgsnd(mailbox_ptr -> storage.msqid, &msg, sizeof(msg.msg_text), 0) == -1){ // link msg buffer with msg queue
         /* 
         msgsnd("a queue ID which receive msg", "get message type and content",
         "the size of the msg content", "0: if queue is full, wait")
@@ -26,23 +30,29 @@ void send(message_t message, mailbox_t* mailbox_ptr){
         // if return value is 0 => success, -1 => fail  
         perror("Failed to send message via message queue");
         exit(1);    
+    } 
+    if (strcmp(message.data, "exit") != 0){
+        printf(KCYN_L "Sending Message: ");
+        printf(RESET "%s\n",message.data);
     }
-    
-    printf("Sent via Message Passing: %s\n", message.data);
 
     }
+
     // Use "Shared_Memory" to send msg
     else if (mailbox_ptr -> flag == SHARED_MEM){
-        
+
         if (mailbox_ptr -> storage.shm_addr == NULL){
             fprintf(stderr, "Shared memory address is NULL\n");
             return;
         }
 
-        strcpy(mailbox_ptr -> storage.shm_addr, message.data);  // msg write to shm_addr
-        printf("Sent via Shared Memory: %s\n", message.data);
-
+        strcpy(mailbox_ptr -> storage.shm_addr, message.data);  // msg write to shm segment
+        if (strcmp(message.data, "exit") != 0){
+            printf(KCYN_L "Sending message: ");
+            printf(RESET "%s\n", message.data);
+        }
     }
+
     else{
         fprintf(stderr, "Invaild communication method flag\n");
     }
@@ -57,7 +67,7 @@ int main(int argc, char* argv[]){
         return 1;
     }
 
-    int method = atoi(argv[1]);
+    int method = atoi(argv[1]); // string to int
     const char* input_file = argv[2];
 
     // Read file
@@ -67,7 +77,7 @@ int main(int argc, char* argv[]){
         return 1;
     }
 
-    /*-----------------------------------------------------*/
+/*-----------------------------------------------------*/    
 
     message_t message;
     mailbox_t mailbox;
@@ -76,7 +86,7 @@ int main(int argc, char* argv[]){
     // Semaphore initialization
     sem_t* Sender_SEM;
     sem_t* Receiver_SEM;
-    Sender_SEM = sem_open("/sender_sem", O_CREAT, 0664, 0);
+    Sender_SEM = sem_open("/sender_sem", O_CREAT, 0664, 0); // create sem and set initial value
     Receiver_SEM = sem_open("/receiver_sem", O_CREAT, 0664, 1);
 
     if (Sender_SEM == SEM_FAILED || Receiver_SEM == SEM_FAILED){
@@ -84,13 +94,17 @@ int main(int argc, char* argv[]){
         exit(1);
     }
 
-    // Message queue creation
+/*-----------------------------------------------------*/
+
+    // Sending preprocess
     if (method == 1){
         
+        printf(KCYN_L "Message Passing\n");
+
         // Message Passing initialization
         mailbox.flag = MSG_PASSING;
         
-        key_t key = ftok("sender.c", 65);   // create a key
+        key_t key = ftok("sender.c", 65);   // create a key(unique for msg queue)
         mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
         if (mailbox.storage.msqid == -1){
             perror("Failed to create or access message queue");
@@ -100,6 +114,8 @@ int main(int argc, char* argv[]){
     }
     else if (method == 2){
         
+        printf(KCYN_L "Shared Memory\n");
+
         // Shared Memory initialization
         mailbox.flag = SHARED_MEM;
         
@@ -109,9 +125,12 @@ int main(int argc, char* argv[]){
             perror("Failed to create shared memory segment");
             exit(1);
         }
-        mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
+        mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // sender attatch to created shm segment 
 
     }
+
+    struct timespec start, end;
+    double time_spent = 0.0;
 
     /* Send */
     while (fgets(message.data, sizeof(message.data), file)){
@@ -121,11 +140,14 @@ int main(int argc, char* argv[]){
 
             /* SEM & Critical region */ 
     
-            sem_wait(Receiver_SEM);   // wait B to signal
+            sem_wait(Receiver_SEM);   // wait B to signal (receiver_sem - 1)
 
+            clock_gettime(CLOCK_MONOTONIC, &start);
             send(message, &mailbox);    // send msg to mailbox.msq
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            time_spent += (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9; 
 
-            sem_post(Sender_SEM); // signal B
+            sem_post(Sender_SEM); // signal B (sender_sem + 1)
 
         }
         else if (method == 2){  /* Shared Memory */
@@ -134,7 +156,10 @@ int main(int argc, char* argv[]){
 
             sem_wait(Receiver_SEM);   // wait B to signal
 
+            clock_gettime(CLOCK_MONOTONIC, &start);
             send(message, &mailbox);
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            time_spent += (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9; 
 
             sem_post(Sender_SEM); // signal B
 
@@ -148,43 +173,34 @@ int main(int argc, char* argv[]){
     
     strcpy(message.data, "exit");
     if (method == 1){
+        printf(KRED "End of input file! exit!\n");
+        sem_wait(Receiver_SEM);
+        send(message, &mailbox);    // send "exit" to receiver
+        sem_post(Sender_SEM);
+    }
+    else if (method == 2){
+        printf(KRED "End of input file! exit!\n");
         sem_wait(Receiver_SEM);
         send(message, &mailbox);
         sem_post(Sender_SEM);
     }
-    else if (method == 2){
-        
-    }
+
+    printf(RESET "Total time spent in sending msg: %f ms\n", time_spent);
 
     fclose(file);
 
     // Semaphore
-    sem_close(Sender_SEM);
+    sem_close(Sender_SEM);  // close semaphore
     sem_close(Receiver_SEM);
-    sem_unlink("/sender_sem");
+    sem_unlink("/sender_sem");  // delete semaphore
     sem_unlink("/receiver_sem");    
 
-    if (method == 1){
-        // Message Passing
-        //msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
-    }
-    else if (method == 2){
+    if (method == 2){
         // Shared Memory
-        shmdt(mailbox.storage.shm_addr);
-        shmctl(shmid, IPC_RMID, NULL);
+        shmdt(mailbox.storage.shm_addr);    // detach sender with shm segment
+        shmctl(shmid, IPC_RMID, NULL);  // delete shm segment
     }
 
     return 0;
 
-    /*  TODO: 
-        1) Call send(message, &mailbox) according to the flow in slide 4
-        2) Measure the total sending time
-        3) Get the mechanism and the input file from command line arguments
-            • e.g. ./sender 1 input.txt
-                    (1 for Message Passing, 2 for Shared Memory)
-        4) Get the messages to be sent from the input file
-        5) Print information on the console according to the output format
-        6) If the message form the input file is EOF, send an exit message to the receiver.c
-        7) Print the total sending time and terminate the sender.c
-    */
 }

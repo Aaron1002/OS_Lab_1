@@ -1,5 +1,6 @@
 CC := gcc
 override CFLAGS += -O3 -Wall
+LDFLAGS := -lrt 
 
 SOURCE1 := sender.c
 BINARY1 := sender
