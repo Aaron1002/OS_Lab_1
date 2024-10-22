@@ -84,20 +84,40 @@ int main(int argc, char* argv[]){
         exit(1);
     }
 
+    // Message queue creation
+    if (method == 1){
+        
+        // Message Passing initialization
+        mailbox.flag = MSG_PASSING;
+        
+        key_t key = ftok("sender.c", 65);   // create a key
+        mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
+        if (mailbox.storage.msqid == -1){
+            perror("Failed to create or access message queue");
+            exit(1);
+        }    
+    
+    }
+    else if (method == 2){
+        
+        // Shared Memory initialization
+        mailbox.flag = SHARED_MEM;
+        
+        key_t key = ftok("sender.c", 66);
+        shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
+        if (shmid == -1){
+            perror("Failed to create shared memory segment");
+            exit(1);
+        }
+        mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
+
+    }
+
+    /* Send */
     while (fgets(message.data, sizeof(message.data), file)){
         message.data[strcspn(message.data, "\n")] = 0;  // remove \n
 
         if (method == 1){   /* Message Passing */
-            
-            // Message Passing initialization
-            mailbox.flag = MSG_PASSING;
-
-            key_t key = ftok("msg1", 65);   // create a key
-            mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // create msg queue
-            if (mailbox.storage.msqid == -1){
-                perror("Failed to create or access message queue");
-                exit(1);
-            }
 
             /* SEM & Critical region */ 
     
@@ -109,17 +129,6 @@ int main(int argc, char* argv[]){
 
         }
         else if (method == 2){  /* Shared Memory */
-            
-            // Shared Memory initialization
-            mailbox.flag = SHARED_MEM;
-
-            key_t key = ftok("msg2", 66);
-            shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // create shm segment
-            if (shmid == -1){
-                perror("Failed to create shared memory segment");
-                exit(1);
-            }
-            mailbox.storage.shm_addr = (char*)shmat(shmid, NULL, 0);    // shm attatch to created shm segment 
 
             /* SEM & Critical region */ 
 
@@ -137,6 +146,16 @@ int main(int argc, char* argv[]){
     
     }
     
+    strcpy(message.data, "exit");
+    if (method == 1){
+        sem_wait(Receiver_SEM);
+        send(message, &mailbox);
+        sem_post(Sender_SEM);
+    }
+    else if (method == 2){
+        
+    }
+
     fclose(file);
 
     // Semaphore
@@ -147,7 +166,7 @@ int main(int argc, char* argv[]){
 
     if (method == 1){
         // Message Passing
-        msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
+        //msgctl(mailbox.storage.msqid, IPC_RMID, NULL);  // delete msg queue
     }
     else if (method == 2){
         // Shared Memory

@@ -72,44 +72,53 @@ int main(int argc, char* argv[]){
     if (method == 1){   /*Message Passing*/
         mailbox.flag = MSG_PASSING;
 
-        key_t key = ftok("msg1", 65);   // create the same key as sender.c
-        mailbox.storage.msqid = msgget(key, 0666 | IPC_CREAT);  // open message queue
+        key_t key = ftok("sender.c", 65);   // create the same key as sender.c
+        mailbox.storage.msqid = msgget(key, 0666);  // open message queue
         if (mailbox.storage.msqid == -1){
             perror("Failed to access message queue");
             exit(1);
         }
-
-        /* SEM & Critical region */
-        sem_wait(Sender_SEM);
-
-        receive(&message, &mailbox);
-
-        sem_post(Receiver_SEM);
-
+    
     }
     else if (method == 2){  /*Shared Memory*/
         mailbox.flag = SHARED_MEM;
 
-        key_t key = ftok("msg2", 66);
-        shmid = shmget(key, MAX_MSG_SIZE, 0666 | IPC_CREAT);    // open shm area
+        key_t key = ftok("sender.c", 66);
+        shmid = shmget(key, MAX_MSG_SIZE, 0666);    // open shm area
         if (shmid == -1){
             perror("Failed to access shared memory segment");
             exit(1);
         }
-
         mailbox.storage.shm_addr = (char*) shmat(shmid, NULL, 0);   // attach to shm area 
 
-        /* SEM & Critical region */
-        sem_wait(Sender_SEM);
-
-        receive(&message, &mailbox);
-
-        sem_post(Sender_SEM);
-    
     }
     else{
         printf("Invalid method\n");
         return 1;
+    }
+
+    /* Send */
+    while (1){
+
+        if (strcmp(message.data, "exit") == 0) break;
+        
+        if (method == 1){
+            /* SEM & Critical region */
+            sem_wait(Sender_SEM);
+
+            receive(&message, &mailbox);
+
+            sem_post(Receiver_SEM);
+        }
+        else if (method == 2){
+            /* SEM & Critical region */
+            sem_wait(Sender_SEM);
+
+            receive(&message, &mailbox);
+
+            sem_post(Sender_SEM);   
+        }
+
     }
 
     /* Post process */
@@ -123,7 +132,6 @@ int main(int argc, char* argv[]){
     }
     else if (method == 2){
         shmdt(mailbox.storage.shm_addr);
-        shmctl(shmid, IPC_RMID, NULL);
     }
 
     return 0;
